@@ -70,3 +70,7 @@ python server.py --port 5000 --save-dir captures
 ```
 
 - `--save-dir` controls where captured files are written.
+
+## Relevant other repos
+
+Check out https://web-gphoto2.rreverser.com/ to connect a browser directly to a camera.
