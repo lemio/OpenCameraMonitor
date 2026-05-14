@@ -1,5 +1,7 @@
 # Camera Live Preview Web UI
 
+https://github.com/user-attachments/assets/c24f03fb-2077-449e-8bb6-7d2f51fb5b7f
+
 Simple web interface for USB-connected cameras using `gphoto2`.
 
 Canon EOS 600D is tested in this repository, but other `gphoto2`-compatible cameras may also work.
