@@ -10,13 +10,22 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%23000' width='192' height='192'/><circle cx='96' cy='96' r='60' fill='%23fff'/><circle cx='96' cy='96' r='40' fill='%23000'/></svg>">
     <title>Canon EOS Preview</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=5">
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
+    <div class="app-shell">
     <div class="container">
         <!-- Camera Preview -->
         <div id="preview-container" class="preview-container">
-            <img id="preview" alt="Camera Preview" class="preview">
+            <img id="preview" alt="Camera feed" class="preview">
+            <div id="preview-overlay" class="preview-overlay" hidden>
+                <div class="preview-overlay-card">
+                    <div id="preview-overlay-icon" class="preview-overlay-icon"></div>
+                    <div id="preview-overlay-title" class="preview-overlay-title">Reconnecting to camera</div>
+                    <div id="preview-overlay-subtitle" class="preview-overlay-subtitle">Waiting for live preview...</div>
+                </div>
+            </div>
             <button id="capture-thumb-button" class="capture-thumb-button" hidden>
                 <img id="capture-thumb" alt="Latest Capture" class="capture-thumb">
             </button>
@@ -75,8 +84,23 @@
 
             <!-- Bottom Controls -->
             <div class="bottom-controls">
-                <!-- Left Side Controls -->
-                <div class="left-controls">
+                <div class="right-controls">
+                    <!-- Share button at the top -->
+                    <button id="share-button" class="control-button share-btn" title="Share Camera URL" aria-label="Share Camera URL">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
+                            <polyline points="16 6 12 2 8 6"></polyline>
+                            <line x1="12" y1="2" x2="12" y2="15"></line>
+                        </svg>
+                    </button>
+                    <!-- Shutter button in the middle -->
+                    <button id="shutter-button" class="shutter-button" title="Capture Photo">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <circle cx="12" cy="12" r="8" opacity="0.3"></circle>
+                            <circle cx="12" cy="12" r="6"></circle>
+                        </svg>
+                    </button>
+                    <!-- Live view toggle at the bottom -->
                     <button id="preview-toggle" class="control-button preview-btn" title="Toggle Live Preview">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"></path>
@@ -84,19 +108,23 @@
                         </svg>
                     </button>
                 </div>
+            </div>
+        </div>
+        </div>
+    </div>
 
-                <!-- Center Shutter Button -->
-                <button id="shutter-button" class="shutter-button" title="Capture Photo">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                        <circle cx="12" cy="12" r="8" opacity="0.3"></circle>
-                        <circle cx="12" cy="12" r="6"></circle>
-                    </svg>
-                </button>
-
-                <!-- Right Side Controls -->
-                <div class="right-controls">
-                    <div></div>
-                </div>
+    <!-- Share Modal -->
+    <div id="share-modal" class="share-modal" hidden>
+        <div class="share-modal-backdrop"></div>
+        <div class="share-modal-panel" role="dialog" aria-modal="true" aria-labelledby="share-modal-title">
+            <div class="share-modal-header">
+                <h2 id="share-modal-title">Share Camera URL</h2>
+                <button id="share-modal-close" class="share-modal-close" aria-label="Close share dialog">&times;</button>
+            </div>
+            <div class="share-modal-body">
+                <div id="share-qr-code" class="share-qr-code"></div>
+                <div id="share-url" class="share-url">Loading network address...</div>
+                <button id="copy-url-button" class="copy-url-button">Copy URL to Clipboard</button>
             </div>
         </div>
     </div>
@@ -109,13 +137,17 @@
     <!-- Status Toast -->
     <div id="toast" class="toast"></div>
 
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='script.js') }}?v=7"></script>
     <script>
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/service-worker.js')
-                .catch(() => {
-                    // Service worker registration failed, but app will still work
-                });
+            navigator.serviceWorker.getRegistrations().then((registrations) => {
+                registrations.forEach((registration) => registration.unregister());
+            });
+        }
+        if ('caches' in window) {
+            caches.keys().then((keys) => {
+                keys.forEach((key) => caches.delete(key));
+            });
         }
     </script>
 </body>

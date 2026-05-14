@@ -10,16 +10,18 @@ import re
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass, asdict
 from typing import Optional
+from urllib.parse import quote
 
 import cv2
 import numpy as np
-from flask import Flask, render_template, jsonify, request, send_from_directory
+from flask import Flask, render_template, jsonify, request, send_from_directory, abort
 from flask_cors import CORS
 
 
@@ -45,6 +47,7 @@ class CameraMetadata:
     white_balance: str = "Unknown"
     drive_mode: Optional[str] = None
     self_timer_seconds: Optional[int] = None
+    preview_enabled: bool = True
     status: str = "Ready"
     reconnects: int = 0
     preview_frame_timestamp: float = 0.0
@@ -109,6 +112,27 @@ def parse_args() -> argparse.Namespace:
         help="Web server port.",
     )
     return parser.parse_args()
+
+
+def get_local_ip_address() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+def get_server_port() -> int:
+    port_value = request.environ.get("SERVER_PORT") or request.host.rsplit(":", 1)[-1]
+    try:
+        return int(port_value)
+    except (TypeError, ValueError):
+        return 8888
+
+
+def get_share_url() -> str:
+    return f"http://{get_local_ip_address()}:{get_server_port()}"
 
 
 def ensure_gphoto2() -> None:
@@ -213,7 +237,7 @@ def run_shutter_capture() -> subprocess.CompletedProcess:
                 [
                     "--capture-image-and-download",
                     "--filename",
-                    os.path.join(CAPTURE_DIR, "IMG_%Y%m%d_%H%M%S.jpg"),
+                    os.path.join(CAPTURE_DIR, "IMG_%Y%m%d_%H%M%S.%C"),
                     "--force-overwrite",
                 ],
                 timeout=45,
@@ -545,6 +569,30 @@ def metadata_refresh_loop() -> None:
         except Exception:
             pass
         time.sleep(METADATA_REFRESH_INTERVAL)
+
+
+def disable_camera_viewfinder() -> None:
+    """Disable viewfinder and movie mode on camera to save power."""
+    try:
+        stop_live_view_processes()
+        release_macos_camera_lock()
+        time.sleep(0.5)
+        run_gphoto2(["--set-config", "/main/actions/viewfinder=0"], timeout=5)
+        run_gphoto2(["--set-config", "/main/actions/eosmoviemode=0"], timeout=5)
+        print("[Preview] Disabled camera viewfinder", file=sys.stderr)
+    except Exception as e:
+        print(f"[Preview] Warning: Failed to disable viewfinder: {e}", file=sys.stderr)
+
+
+def enable_camera_viewfinder() -> None:
+    """Enable viewfinder and movie mode on camera for live preview."""
+    try:
+        time.sleep(0.5)
+        run_gphoto2(["--set-config", "/main/actions/viewfinder=1"], timeout=5)
+        run_gphoto2(["--set-config", "/main/actions/eosmoviemode=1"], timeout=5)
+        print("[Preview] Enabled camera viewfinder", file=sys.stderr)
+    except Exception as e:
+        print(f"[Preview] Warning: Failed to enable viewfinder: {e}", file=sys.stderr)
 
 
 def start_live_view_process() -> subprocess.Popen:
@@ -886,7 +934,19 @@ def stream():
 
 @app.route("/api/metadata")
 def get_metadata():
+    CAMERA_METADATA.preview_enabled = PREVIEW_ENABLED
     return jsonify(asdict(CAMERA_METADATA))
+
+
+@app.route("/api/share-info")
+def api_share_info():
+    return jsonify(
+        {
+            "url": get_share_url(),
+            "host": get_local_ip_address(),
+            "port": get_server_port(),
+        }
+    )
 
 
 @app.route("/api/preview", methods=["GET", "POST"])
@@ -899,10 +959,13 @@ def api_preview():
     payload = request.get_json(silent=True) or {}
     enabled = bool(payload.get("enabled", True))
     PREVIEW_ENABLED = enabled
+    CAMERA_METADATA.preview_enabled = PREVIEW_ENABLED
 
     if PREVIEW_ENABLED:
+        enable_camera_viewfinder()
         STREAM_PAUSE_EVENT.set()
     else:
+        disable_camera_viewfinder()
         STREAM_PAUSE_EVENT.clear()
         stop_live_view_processes()
 
@@ -936,7 +999,7 @@ def api_shutter():
         result = run_shutter_capture()
         if result.returncode == 0:
             latest = find_latest_capture_filename()
-            capture_url = f"/captures/{latest}?t={int(time.time())}" if latest else None
+            capture_url = f"/captures/{quote(latest)}?t={int(time.time())}" if latest else None
             return jsonify(
                 {
                     "status": "ok",
@@ -960,10 +1023,9 @@ def find_latest_capture_filename() -> Optional[str]:
 
     candidates: list[tuple[float, str]] = []
     for name in os.listdir(CAPTURE_DIR):
-        lower = name.lower()
-        if not (lower.endswith(".jpg") or lower.endswith(".jpeg") or lower.endswith(".png")):
-            continue
         full_path = os.path.join(CAPTURE_DIR, name)
+        if not is_web_renderable_image(full_path):
+            continue
         try:
             candidates.append((os.path.getmtime(full_path), name))
         except OSError:
@@ -978,7 +1040,44 @@ def find_latest_capture_filename() -> Optional[str]:
 
 @app.route("/captures/<path:filename>")
 def get_capture(filename: str):
+    full_path = os.path.join(CAPTURE_DIR, filename)
+    if not os.path.isfile(full_path):
+        abort(404)
+    if not is_web_renderable_image(full_path):
+        abort(415)
     return send_from_directory(CAPTURE_DIR, filename)
+
+
+@app.route("/captures")
+@app.route("/captures/")
+def captures_index():
+    if not os.path.isdir(CAPTURE_DIR):
+        return jsonify({"files": []})
+
+    capture_files = []
+    for name in sorted(os.listdir(CAPTURE_DIR), reverse=True):
+        full_path = os.path.join(CAPTURE_DIR, name)
+        if os.path.isfile(full_path) and is_web_renderable_image(full_path):
+            capture_files.append(f"/captures/{quote(name)}")
+
+    return jsonify({"files": capture_files})
+
+
+def is_web_renderable_image(path: str) -> bool:
+    """Return True only for image bytes browsers can render directly."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(12)
+    except OSError:
+        return False
+
+    if header.startswith(b"\xff\xd8\xff"):
+        return True  # JPEG
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True  # PNG
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return True  # WEBP
+    return False
 
 
 @app.route("/api/wb-pick", methods=["POST"])
@@ -1031,6 +1130,7 @@ def initialize_camera_state(expected_model: str) -> None:
         WB_STATE = discover_white_balance()
         TIMER_CONFIG_PATHS = discover_timer_config_paths()
         update_camera_metadata()
+        CAMERA_METADATA.preview_enabled = PREVIEW_ENABLED
         if PREVIEW_ENABLED:
             STREAM_PAUSE_EVENT.set()
     except Exception as exc:
@@ -1045,7 +1145,7 @@ def main():
     release_macos_camera_lock()
 
     global CAPTURE_DIR
-    CAPTURE_DIR = args.save_dir
+    CAPTURE_DIR = os.path.abspath(args.save_dir)
     os.makedirs(CAPTURE_DIR, exist_ok=True)
 
     init_thread = threading.Thread(
