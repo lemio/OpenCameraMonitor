@@ -54,7 +54,7 @@ Captured files are stored in:
 
 ## Notes About Compatibility
 
-- Canon EOS cameras are tested.
+- Canon EOS 600D is tested.
 - Other cameras can work if `gphoto2 --auto-detect` finds them and live view/capture commands are supported by the device.
 
 Quick check:
